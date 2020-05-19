@@ -11,15 +11,14 @@ from typing import Tuple, List, Optional, Union
 import pandas as pd
 import numpy as np
 from matplotlib import pyplot as plt
-import matplotlib.patches as mpl_patches
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
 
 # Local imports
 SCRIPT_PATH = os.path.dirname(__file__)
 sys.path.append(os.path.abspath(SCRIPT_PATH + '/..'))
-from Helpers.PELEIterator import SimIt
-from Helpers.SubpocketAnalysis import read_subpocket_dataframe
+from PELEIterator import SimIt
+from Helpers.Subpockets import read_subpocket_dataframe
 
 
 # Script information

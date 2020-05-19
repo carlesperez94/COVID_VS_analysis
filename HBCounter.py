@@ -7,15 +7,17 @@ import argparse as ap
 from multiprocessing import Pool
 from functools import partial
 from pathlib import Path
+from typing import List, Tuple, Set, Dict
 
 # Local imports
-from Helpers.PELEIterator import SimIt
+from Helpers import SimIt, HBondLinker
 from Helpers import hbond_mod as hbm
 from Helpers.ReportUtils import extract_metrics
 
 # External imports
 import mdtraj as md
 import pandas as pd
+import numpy as np
 
 
 # Script information
@@ -89,65 +91,93 @@ def parse_args():
         args.include_rejected_steps, args.alternative_output_path
 
 
-def account_for_ignored_hbonds(hbonds_in_traj, accepted_steps):
-    new_hbonds_in_traj = {}
+def account_for_ignored_hbonds(hbonds_in_traj: List[List[HBondLinker]],
+                               accepted_steps: List[int]
+                               ) -> List[List[HBondLinker]]:
+    new_hbonds_in_traj = []
     for i, s in enumerate(accepted_steps):
-        new_hbonds_in_traj[i] = hbonds_in_traj[s]
+        new_hbonds_in_traj.append(hbonds_in_traj[s])
 
     return new_hbonds_in_traj
 
 
-def find_hbonds_in_trajectory(lig_resname, distance, angle, pseudo,
-                              topology_path, chain_ids, report_name,
-                              include_rejected_steps, traj_path):
+def find_hbonds_in_trajectory(lig_resname: str, distance: float, angle: float,
+                              pseudo: bool, topology_path: Path,
+                              chain_ids: List[str], report_name: str,
+                              include_rejected_steps: bool, traj_path: Path
+                              ) -> Tuple[List[List[HBondLinker]],
+                                         List[int], List[int],
+                                         Set[md.core.topology.Atom],
+                                         Set[md.core.topology.Atom]]:
     try:
         traj = md.load_xtc(str(traj_path), top=str(topology_path))
     except OSError:
         print('     - Warning: problems loading trajectory '
               '{}, it will be ignored'.format(traj_path))
-        return {}
+        # Return empty data structures
+        return list(), list(), list(), set(), set()
 
     lig = traj.topology.select('resname {}'.format(lig_resname))
     hbonds_in_traj, donors, acceptors = find_ligand_hbonds(traj, lig, distance,
                                                            angle, pseudo,
                                                            chain_ids)
 
-    if (include_rejected_steps):
-        # Recover corresponding report
-        num = int(''.join(filter(str.isdigit, traj_path.name)))
-        path = traj_path.parent
-        report_path = path.joinpath(report_name + '_{}'.format(num))
+    # Recover corresponding report
+    num = int(''.join(filter(str.isdigit, traj_path.name)))
+    path = traj_path.parent
+    report_path = path.joinpath(report_name + '_{}'.format(num))
+    metrics = extract_metrics((report_path, ), (2, 3))[0]
 
-        metrics = extract_metrics((report_path, ), (3, ))[0]
+    total_steps = []
+    accepted_steps = []
+    for m in metrics:
+        total_steps.append(int(m[0]))
+        accepted_steps.append(int(m[1]))
 
-        accepted_steps = []
-        for m in metrics:
-            accepted_steps.append(int(m[0]))
+    try:
+        if (include_rejected_steps):
+            hbonds_in_traj = account_for_ignored_hbonds(hbonds_in_traj,
+                                                        accepted_steps)
+        else:
+            if (len(hbonds_in_traj) != len(total_steps)
+                    or len(hbonds_in_traj) != len(accepted_steps)):
+                raise IndexError
+    except IndexError:
+        print('     - Warning: inconsistent number of models found in '
+              + 'trajectory {} from {}, '.format(num, path)
+              + 'this trajectory will be ignored')
+        # Return empty data structures
+        return list(), list(), list(), set(), set()
 
-        hbonds_in_traj = account_for_ignored_hbonds(hbonds_in_traj,
-                                                    accepted_steps)
-
-    return hbonds_in_traj, donors, acceptors
+    return hbonds_in_traj, total_steps, accepted_steps, donors, acceptors
 
 
-def find_ligand_hbonds(traj, lig, distance, angle, pseudo, chain_ids):
-    hbonds_dict = {}
+def find_ligand_hbonds(traj: md.Trajectory, lig: np.ndarray, distance: float,
+                       angle: float, pseudo: bool, chain_ids: List[str]
+                       ) -> Tuple[List[List[HBondLinker]],
+                                  Set[md.core.topology.Atom],
+                                  Set[md.core.topology.Atom]]:
+    hbonds_list = []
     donors = set()
     acceptors = set()
     for model_id in range(0, traj.n_frames):
         results, _donors, _acceptors = find_hbond_in_snapshot(
             traj, model_id, lig, distance, angle, pseudo, chain_ids)
-        hbonds_dict[model_id] = results
+        hbonds_list.append(results)
         for d in _donors:
             donors.add(d)
         for a in _acceptors:
             acceptors.add(a)
 
-    return hbonds_dict, donors, acceptors
+    return hbonds_list, donors, acceptors
 
 
-def find_hbond_in_snapshot(traj, model_id, lig, distance, angle, pseudo,
-                           chain_ids):
+def find_hbond_in_snapshot(traj: md.Trajectory, model_id: int, lig: np.ndarray,
+                           distance: float, angle: float, pseudo: bool,
+                           chain_ids: List[str]
+                           ) -> Tuple[List[HBondLinker],
+                                      Set[md.core.topology.Atom],
+                                      Set[md.core.topology.Atom]]:
     hbonds = hbm.baker_hubbard(traj=traj[model_id], distance=distance,
                                angle=angle, pseudo=pseudo)
 
@@ -164,13 +194,44 @@ def find_hbond_in_snapshot(traj, model_id, lig, distance, angle, pseudo,
             for atom in hbond:
                 if (atom not in lig):
                     _atom = traj.topology.atom(atom)
-                    results.append('{}:{}:{}'.format(
+                    hb_linker = HBondLinker(
                         chain_ids[_atom.residue.chain.index],
-                        _atom.residue,
-                        _atom.name))
+                        _atom.residue, tuple((_atom.name, )))
+                    results.append(hb_linker)
                     break
 
     return results, donors, acceptors
+
+
+def parse_results(results: Tuple[List[HBondLinker],
+                                 Set[md.core.topology.Atom],
+                                 Set[md.core.topology.Atom]],
+                  trajectories: List[md.Trajectory]
+                  ) -> Tuple[pd.DataFrame,
+                             Set[md.core.topology.Atom],
+                             Set[md.core.topology.Atom],
+                             int]:
+    counter = 0
+    data = pd.DataFrame()
+    donors = set()
+    acceptors = set()
+    for (r, t_steps, a_steps, _donors, _acceptors), t in zip(results,
+                                                             trajectories):
+        counter += len(r)
+        epoch = int(t.parent.name)
+        trajectory = int(''.join(filter(str.isdigit, t.name)))
+        for hbonds, t_s, a_s in zip(r, t_steps, a_steps):
+            data = data.append(pd.DataFrame(
+                [(epoch, trajectory, t_s, a_s, hbonds)],
+                columns=['epoch', 'trajectory', 'step', 'model',
+                         'hbonds']))
+
+        for d in _donors:
+            donors.add(d)
+        for a in _acceptors:
+            acceptors.add(a)
+
+    return data, donors, acceptors, counter
 
 
 def main():
@@ -218,27 +279,11 @@ def main():
             results = pool.map(parallel_function,
                                trajectories)
 
-        counter = 0
-        for r, d, a in results:
-            counter += len(r.values())
+        data, donors, acceptors, counter = parse_results(results, trajectories)
 
         print('     - {} models were found'.format(counter))
-
-        data = pd.DataFrame()
-        donors = set()
-        acceptors = set()
-        for (r, _donors, _acceptors), t in zip(results, trajectories):
-            epoch = int(t.parent.name)
-            trajectory = int(''.join(filter(str.isdigit, t.name)))
-            for model, hbonds in r.items():
-                data = data.append(pd.DataFrame(
-                    [(epoch, trajectory, model, hbonds)],
-                    columns=['epoch', 'trajectory', 'model', 'hbonds']))
-
-            for d in _donors:
-                donors.add(d)
-            for a in _acceptors:
-                acceptors.add(a)
+        print('     - {} ligand donors were found'.format(len(donors)))
+        print('     - {} ligand acceptors were found'.format(len(acceptors)))
 
         if (alternative_output_path is not None):
             output_path = Path(alternative_output_path)
@@ -252,7 +297,7 @@ def main():
             output_path = PELE_sim_path.joinpath(output_relative_path)
 
         output_info_path = Path(output_path.parent).joinpath(
-            output_path.name.strip(output_path.suffix) + '.info')
+            output_path.name.replace(output_path.suffix, '') + '.info')
 
         with open(str(output_info_path), 'w') as file:
             file.write(str(PELE_sim_path.name) + '\n')

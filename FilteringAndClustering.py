@@ -9,6 +9,15 @@ from functools import partial
 from collections import defaultdict
 from operator import itemgetter
 
+# Local imports
+from Helpers import SimIt
+from Helpers.ReportUtils import extract_PELE_ids
+from Helpers.ReportUtils import get_metric_by_PELE_id
+from Helpers.Hbonds import (
+    extract_hbond_linkers, hbond_fulfillment, get_hbond_linkers,
+    check_hbonds_linkers, print_hbonds
+)
+
 # External imports
 import mdtraj as md
 import numpy as np
@@ -16,12 +25,6 @@ from sklearn.cluster import MeanShift
 import matplotlib as mpl
 mpl.use('Agg')
 from matplotlib import pyplot as plt
-
-# PELE imports
-from Helpers.PELEIterator import SimIt
-from Helpers.ReportUtils import extract_PELE_ids
-from Helpers.ReportUtils import extract_metrics
-from Helpers.ReportUtils import get_metric_by_PELE_id
 
 
 # Script information
@@ -70,29 +73,29 @@ def parse_args():
 
     parser.add_argument("--hbonds_path",
                         metavar="PATH", type=str,
-                        default='hbonds.out',
+                        default='hbonds.csv',
                         help="Path to H bonds file")
 
     parser.add_argument("-g1", "--golden_hbonds_1", nargs='*',
                         metavar="C:R[:A1, A2]", type=str, default=[],
-                        help="Chain (C), residue (R) [and atoms (A1, A2)] of" +
-                        "subset 1 of golden H bonds. Subset 1 contains H " +
-                        "bond conditions that must always be fulfilled in " +
-                        "the filtering process")
+                        help="Chain (C), residue (R) [and atoms (A1, A2)] of"
+                        + "subset 1 of golden H bonds. Subset 1 contains H "
+                        + "bond conditions that must always be fulfilled in "
+                        + "the filtering process")
 
     parser.add_argument("-g2", "--golden_hbonds_2", nargs='*',
                         metavar="C:R[:A1, A2]", type=str, default=[],
-                        help="Chain (C), residue (R) [and atoms (A1, A2)] of" +
-                        "subset 2 of golden H bonds. Subset 2 contains H " +
-                        "bond conditions that only a minimum number of them " +
-                        "must be fulfilled in the filtering process. The " +
-                        "minimum of required conditions from subset 2 is " +
+                        help="Chain (C), residue (R) [and atoms (A1, A2)] of"
+                        + "subset 2 of golden H bonds. Subset 2 contains H "
+                        + "bond conditions that only a minimum number of them "
+                        + "must be fulfilled in the filtering process. The "
+                        + "minimum of required conditions from subset 2 is "
                         "defined with the minimum_g2_conditions argument")
 
     parser.add_argument("--minimum_g2_conditions",
                         metavar="N", type=int, default=2,
-                        help="Minimum number of subset 2 golden H bonds " +
-                        "that must be fulfilled in the filtering process")
+                        help="Minimum number of subset 2 golden H bonds "
+                        + "that must be fulfilled in the filtering process")
 
     parser.add_argument("-o", "--output_path",
                         metavar="PATH", type=str, default="filtering_results")
@@ -106,17 +109,17 @@ def parse_args():
                                  "total_energy"],
                         type=str, metavar="MODE",
                         default="interaction_energy",
-                        help="Method to extract the representative structure" +
-                        " from the final selected cluster. The structure can" +
-                        " be selected by minimizing the interaction energy, " +
-                        "the total energy or by considering the one that is " +
-                        "closer to the center of the cluster.")
+                        help="Method to extract the representative structure"
+                        + " from the final selected cluster. The structure can"
+                        + " be selected by minimizing the interaction energy, "
+                        + "the total energy or by considering the one that is "
+                        + "closer to the center of the cluster.")
 
     parser.add_argument("--maximum_cluster_density_threshold",
                         metavar="B", type=float, default='0.25',
-                        help="Maximum cluster density threshold that is used" +
-                        " to filter out low populated clusters in the final" +
-                        " selection stage.")
+                        help="Maximum cluster density threshold that is used"
+                        + " to filter out low populated clusters in the final"
+                        + " selection stage.")
 
     parser.set_defaults(generate_plots=False)
 
@@ -175,33 +178,6 @@ def extract_ligand_properties(topology_path, resname):
     return n_heavy_atoms, molecular_weight
 
 
-def extract_hbonds(hbonds_path):
-    hbonds = defaultdict(list)
-
-    with open(str(hbonds_path), 'r') as file:
-        # Skip four header lines
-        # file.readline()
-        # file.readline()
-        # file.readline()
-        file.readline()
-
-        # Extra hbonds and construct dict
-        for line in file:
-            line = line.strip()
-            fields = line.split(",")
-            epoch, trajectory, model = map(int, fields[:3])
-            _hbonds = []
-            try:
-                hbs = ",".join(fields[3:]).strip("\"")
-                for hb in eval(hbs):
-                    _hbonds.append(hb)
-            except IndexError:
-                pass
-            hbonds[(epoch, trajectory, model)] = tuple(_hbonds)
-
-    return hbonds
-
-
 def p_extract_ligand_metrics(cols, report_path):
     results = []
 
@@ -218,11 +194,11 @@ def p_extract_ligand_metrics(cols, report_path):
                     results.append(metrics)
 
         except IndexError:
-            print(' - p_extract_ligand_metric Warning: wrong index ' +
-                  'supplied for trajectory: \'{}\''.format(report_path))
+            print(' - p_extract_ligand_metric Warning: wrong index '
+                  + 'supplied for trajectory: \'{}\''.format(report_path))
     else:
-        print(' - p_extract_ligand_metric Warning: wrong path to report ' +
-              'for trajectory: \'{}\''.format(report_path))
+        print(' - p_extract_ligand_metric Warning: wrong path to report '
+              + 'for trajectory: \'{}\''.format(report_path))
 
     return results
 
@@ -237,28 +213,20 @@ def extract_ligand_metrics(reports, cols, proc_number):
     return results
 
 
-def filter_by_hbonds(hbonds, golden_hbonds_1, golden_hbonds_2,
-                     minimum_g2_conditions):
-    filtered_PELE_ids = []
-    for PELE_id, _hbonds in hbonds.items():
-        g1_matchs = 0
-        g2_matchs = 0
-        for hb in set(_hbonds):
-            chain, residue, atom = hb.split(':')
-            if ((chain, residue) in golden_hbonds_1):
-                if ((atom in golden_hbonds_1[(chain, residue)]) or
-                        ('all' in golden_hbonds_1[(chain, residue)])):
-                    g1_matchs += 1
-            if ((chain, residue) in golden_hbonds_2):
-                if ((atom in golden_hbonds_2[(chain, residue)]) or
-                        ('all' in golden_hbonds_2[(chain, residue)])):
-                    g2_matchs += 1
+def filter_by_hbonds(f_hbond_data):
+    # Compatibility with older pandas versions
+    try:
+        unhashable_PELE_ids = f_hbond_data.loc[:, ('epoch', 'trajectory',
+                                                   'model')].to_list()
+    except AttributeError:
+        unhashable_PELE_ids = f_hbond_data.loc[:, ('epoch', 'trajectory',
+                                                   'model')].values
 
-        if ((g1_matchs == len(golden_hbonds_1)) and
-                (g2_matchs >= minimum_g2_conditions)):
-            filtered_PELE_ids.append(PELE_id)
+    PELE_ids = []
+    for PELE_id in unhashable_PELE_ids:
+        PELE_ids.append(tuple(PELE_id))
 
-    return filtered_PELE_ids
+    return PELE_ids
 
 
 def filter_by_energies(PELE_ids, ie_by_PELE_id):
@@ -433,14 +401,14 @@ def get_metrics_from_cluster(cluster_id, results, PELE_ids,
                     best_id = PELE_id
 
             elif (representative_extraction_method == "interaction_energy"):
-                if (best_metric is None or
-                        ie_by_PELE_id[PELE_id] < best_metric):
+                if (best_metric is None
+                        or ie_by_PELE_id[PELE_id] < best_metric):
                     best_metric = ie_by_PELE_id[PELE_id]
                     best_id = PELE_id
 
             elif (representative_extraction_method == "total_energy"):
-                if (best_metric is None or
-                        te_by_PELE_id[PELE_id] < best_metric):
+                if (best_metric is None
+                        or te_by_PELE_id[PELE_id] < best_metric):
                     best_metric = te_by_PELE_id[PELE_id]
                     best_id = PELE_id
 
@@ -469,7 +437,7 @@ def generate_plot(PELE_ids, filtered_PELE_ids_1, filtered_PELE_ids_2,
                   rmsd_by_PELE_id, energy_by_PELE_id, representative_PELE_id,
                   results, cluster_id,
                   output_path, energy_label):
-    fig = plt.figure()
+    #fig = plt.figure()
     ax = plt.subplot(111)
 
     x = []
@@ -539,6 +507,8 @@ def generate_plot(PELE_ids, filtered_PELE_ids_1, filtered_PELE_ids_2,
     plt.savefig(str(output_path.joinpath(
         energy_label.lower().replace(' ', '_') + '_plot.png')))
 
+    plt.close()
+
 
 def main():
     # Parse args
@@ -549,22 +519,17 @@ def main():
         representative_extraction_method, maximum_cluster_density_threshold = \
         parse_args()
 
-    golden_hbonds_1 = prepare_golden_dict(golden_hbonds_1)
-    golden_hbonds_2 = prepare_golden_dict(golden_hbonds_2)
+    golden_hbonds_1 = get_hbond_linkers(golden_hbonds_1)
+    golden_hbonds_2 = get_hbond_linkers(golden_hbonds_2)
+
+    check_hbonds_linkers(golden_hbonds_1)
+    check_hbonds_linkers(golden_hbonds_2)
 
     print(' - Golden H bonds set 1:')
-    for res, atoms in golden_hbonds_1.items():
-        print('   - {}:{}:'.format(*res), end='')
-        for at in atoms[:-1]:
-            print(at, end=',')
-        print(atoms[-1])
-    print(' - Golden H bonds set 2 ({} '.format(minimum_g2_conditions) +
-          'of them need to be fulfilled):')
-    for res, atoms in golden_hbonds_2.items():
-        print('   - {}:{}:'.format(*res), end='')
-        for at in atoms[:-1]:
-            print(at, end=',')
-        print(atoms[-1])
+    print_hbonds(golden_hbonds_1)
+    print(' - Golden H bonds set 2 ({} '.format(minimum_g2_conditions)
+          + 'of them need to be fulfilled):')
+    print_hbonds(golden_hbonds_2)
 
     all_sim_it = SimIt(PELE_sim_paths)
 
@@ -573,24 +538,24 @@ def main():
         print(' - Extracting ligand coords from {}'.format(PELE_sim_path))
         hbonds_path = PELE_sim_path.joinpath(hbonds_relative_path)
         topology_path = PELE_sim_path.joinpath(topology_relative_path)
-        lig_rotamers_path = PELE_sim_path.joinpath('DataLocal/' +
-                                                   'LigandRotamerLibs/' +
-                                                   '{}.rot.assign'.format(
+        lig_rotamers_path = PELE_sim_path.joinpath('DataLocal/'
+                                                   + 'LigandRotamerLibs/'
+                                                   + '{}.rot.assign'.format(
                                                        lig_resname))
 
         if (not topology_path.is_file()):
-            print(' - Skipping simulation because topology file with ' +
-                  'connectivity was missing')
+            print(' - Skipping simulation because topology file with '
+                  + 'connectivity was missing')
             continue
 
         if (not hbonds_path.is_file()):
-            print(' - Skipping simulation because hbonds file was ' +
-                  'missing')
+            print(' - Skipping simulation because hbonds file was '
+                  + 'missing')
             continue
 
         if (not lig_rotamers_path.is_file()):
-            print(' - Skipping simulation because ligand rotamer library was' +
-                  ' missing')
+            print(' - Skipping simulation because ligand rotamer library was'
+                  + ' missing')
             continue
 
         sim_it = SimIt(PELE_sim_path)
@@ -610,11 +575,15 @@ def main():
 
         PELE_ids = extract_PELE_ids(reports)
 
-        hbonds = extract_hbonds(hbonds_path)
+        hbond_data, _, _ = extract_hbond_linkers(hbonds_path)
 
-        print(' - Detected {} sets of H bonds'.format(len(hbonds)))
+        print(' - Detected {} sets of H bonds'.format(len(hbond_data)))
 
-        if (len(hbonds) == 0):
+        total_fulfillments, total_models, _, _, f_hbond_data = \
+            hbond_fulfillment(hbond_data, golden_hbonds_1, golden_hbonds_2,
+                              minimum_g2_conditions)
+
+        if total_fulfillments == 0:
             print(' - Skipping simulation because no H bonds were found')
             continue
 
@@ -640,29 +609,27 @@ def main():
         rmsd_by_PELE_id = get_metric_by_PELE_id(PELE_ids, rmsds)
         te_by_PELE_id = get_metric_by_PELE_id(PELE_ids, tes)
 
-        filtered_PELE_ids_1 = filter_by_hbonds(hbonds, golden_hbonds_1,
-                                               golden_hbonds_2,
-                                               minimum_g2_conditions)
+        filtered_PELE_ids_1 = filter_by_hbonds(f_hbond_data)
 
-        print(' - H bond filtering: {} '.format(len(filtered_PELE_ids_1)) +
-              'structures were selected out of ' +
-              '{}'.format(len(PELE_ids[0])))
+        print(' - H bond filtering: {} '.format(len(filtered_PELE_ids_1))
+              + 'structures were selected out of '
+              + '{}'.format(len(PELE_ids[0])))
 
         if (len(filtered_PELE_ids_1) == 0):
-            print(' - Skipping simulation because no model fulfills the ' +
-                  'required conditions')
+            print(' - Skipping simulation because no model fulfills the '
+                  + 'required conditions')
             continue
 
         filtered_PELE_ids_2 = filter_by_energies(filtered_PELE_ids_1,
                                                  ie_by_PELE_id)
 
-        print(' - Energetic filtering: {} '.format(len(filtered_PELE_ids_2)) +
-              'structures were selected out of ' +
-              '{}'.format(len(filtered_PELE_ids_1)))
+        print(' - Energetic filtering: {} '.format(len(filtered_PELE_ids_2))
+              + 'structures were selected out of '
+              + '{}'.format(len(filtered_PELE_ids_1)))
 
         if (len(filtered_PELE_ids_2) == 0):
-            print(' - Skipping simulation because no model fulfills the ' +
-                  'required conditions')
+            print(' - Skipping simulation because no model fulfills the '
+                  + 'required conditions')
             continue
 
         lig_coords, filtered_PELE_ids_2 = extract_ligand_coords(
@@ -675,8 +642,8 @@ def main():
 
         p_dict = calculate_probabilities(results)
 
-        print(' - Clustering resulted in {} clusters '.format(len(p_dict)) +
-              'with densities:')
+        print(' - Clustering resulted in {} clusters '.format(len(p_dict))
+              + 'with densities:')
         for c, f in sorted(p_dict.items(), key=itemgetter(0)):
             print('   - {:3d}: {:3.2f}'.format(c, f))
 
@@ -696,26 +663,26 @@ def main():
         if (not output_path.is_dir()):
             os.mkdir(str(output_path))
 
-        print(' - Results')
+        print(' - Results:')
         print('   - Number of clusters:      {:25d}'.format(
             len(cluster_centers)))
         print('   - Selected cluster:        {:25d}'.format(cluster_id))
         print('   - Mean total energy:       {:25.1f}'.format(np.mean(tes)))
         print('   - Mean interaction energy: {:25.1f}'.format(np.mean(ies)))
-        print('   - Mean RMSD (respect to initial structure): ' +
-              '{:8.1f}'.format(np.mean(rmsds)))
+        print('   - Mean RMSD (respect to initial structure): '
+              + '{:8.1f}'.format(np.mean(rmsds)))
         print('   - Min total energy:        {:25.1f}'.format(np.min(tes)))
         print('   - Min interaction energy:  {:25.1f}'.format(np.min(ies)))
-        print('   - Min RMSD (respect to initial structure):  ' +
-              '{:8.1f}'.format(np.min(rmsds)))
+        print('   - Min RMSD (respect to initial structure):  '
+              + '{:8.1f}'.format(np.min(rmsds)))
         print('   - Max total energy:        {:25.1f}'.format(np.max(tes)))
         print('   - Max interaction energy:  {:25.1f}'.format(np.max(ies)))
-        print('   - Max RMSD (respect to initial structure):  ' +
-              '{:8.1f}'.format(np.max(rmsds)))
-        print('   - Representative structure: ' +
-              'epoch: {}, '.format(representative_PELE_id[0]) +
-              'trajectory: {}, '.format(representative_PELE_id[1]) +
-              'model: {}'.format(representative_PELE_id[2]))
+        print('   - Max RMSD (respect to initial structure):  '
+              + '{:8.1f}'.format(np.max(rmsds)))
+        print('   - Representative structure: '
+              + 'epoch: {}, '.format(representative_PELE_id[0])
+              + 'trajectory: {}, '.format(representative_PELE_id[1])
+              + 'model: {}'.format(representative_PELE_id[2]))
 
         with open(str(output_path.joinpath('metrics.out')), 'w') as f:
             f.write('{:19}: {:10d}\n'.format(

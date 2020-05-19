@@ -6,11 +6,15 @@ import argparse as ap
 from pathlib import Path
 
 # Local imports
-from Helpers.PELEIterator import SimIt
+from Helpers import SimIt
+from Helpers.Hbonds import (
+    extract_hbond_linkers, get_hbond_linkers, check_hbonds_linkers,
+    print_hbonds, hbond_fulfillment
+)
+from typing import List, Dict
 
 # External imports
 import pandas as pd
-from ast import literal_eval
 
 
 # Script information
@@ -72,86 +76,6 @@ def parse_args():
         args.ligand_resname, args.subpocket_filtering
 
 
-def prepare_golden_dict(golden_hbonds):
-    golden_dict = {}
-    for hb in golden_hbonds:
-        hb_data = hb.split(':')
-        if (len(hb_data) == 2):
-            golden_dict[tuple(hb_data)] = ['all']
-        elif (len(hb_data) == 3):
-            golden_dict[tuple(hb_data[0:2])] = hb_data[2].split(',')
-        else:
-            print('Error: golden H bonds \'{}\' have a wrong format'.format(
-                golden_hbonds))
-
-    return golden_dict
-
-
-def extract_hbonds(hbonds_path):
-    output_info_path = Path(str(hbonds_path).replace(hbonds_path.suffix, '')
-                            + '.info')
-
-    if (output_info_path.is_file()):
-        with open(str(output_info_path), 'r') as file:
-            # Skip four header lines
-            file.readline()
-            n_donors = int(file.readline().split()[0])
-            n_acceptors = int(file.readline().split()[0])
-            file.readline()
-    else:
-        print('   - Warning: H bonds info output file not found')
-        n_donors = -1
-        n_acceptors = -1
-
-    data = pd.read_csv(str(hbonds_path))
-    data.hbonds = data.hbonds.apply(literal_eval)
-
-    return data, n_donors, n_acceptors
-
-
-def hbond_fulfillment(data, golden_hbonds_1, golden_hbonds_2,
-                      minimum_g2_conditions):
-    hbonds = data.hbonds.to_list()
-    total_fulfillments = 0
-    fulfillments_by_g1_hbond = {}
-    fulfillments_by_g2_hbond = {}
-    mask = []
-    for _hbonds in hbonds:
-        g1_matchs = 0
-        g2_matchs = 0
-        for hb in set(_hbonds):
-            chain, residue, atom = hb.split(':')
-            if ((chain, residue) in golden_hbonds_1):
-                if ((atom in golden_hbonds_1[(chain, residue)])
-                        or ('all' in golden_hbonds_1[(chain, residue)])):
-                    g1_matchs += 1
-                    _hb = (chain, residue, tuple(
-                        golden_hbonds_1[(chain, residue)]))
-                    fulfillments_by_g1_hbond[_hb] = \
-                        fulfillments_by_g1_hbond.get(_hb, 0) + 1
-
-            if ((chain, residue) in golden_hbonds_2):
-                if ((atom in golden_hbonds_2[(chain, residue)])
-                        or ('all' in golden_hbonds_2[(chain, residue)])):
-                    g2_matchs += 1
-                    _hb = (chain, residue, tuple(
-                        golden_hbonds_2[(chain, residue)]))
-                    fulfillments_by_g2_hbond[_hb] = \
-                        fulfillments_by_g2_hbond.get(_hb, 0) + 1
-
-        if ((g1_matchs == len(golden_hbonds_1))
-                and (g2_matchs >= minimum_g2_conditions)):
-            total_fulfillments += 1
-            accepted = True
-        else:
-            accepted = False
-
-        mask.append(accepted)
-
-    return total_fulfillments, len(hbonds), fulfillments_by_g1_hbond, \
-        fulfillments_by_g2_hbond, data[mask]
-
-
 def get_ligand_rotatable_bonds(lig_rotamers_path):
     counter = 0
     with open(str(lig_rotamers_path), 'r') as lrl:
@@ -168,22 +92,17 @@ def main():
         minimum_g2_conditions, output_path, lig_resname, \
         subpockets_relative_filtering = parse_args()
 
-    golden_hbonds_1 = prepare_golden_dict(golden_hbonds_1)
-    golden_hbonds_2 = prepare_golden_dict(golden_hbonds_2)
+    golden_hbonds_1 = get_hbond_linkers(golden_hbonds_1)
+    golden_hbonds_2 = get_hbond_linkers(golden_hbonds_2)
+
+    check_hbonds_linkers(golden_hbonds_1)
+    check_hbonds_linkers(golden_hbonds_2)
 
     print(' - Golden H bonds set 1:')
-    for res, atoms in golden_hbonds_1.items():
-        print('   - {}:{}:'.format(*res), end='')
-        for at in atoms[: -1]:
-            print(at, end=',')
-        print(atoms[-1])
+    print_hbonds(golden_hbonds_1)
     print(' - Golden H bonds set 2 ({} '.format(minimum_g2_conditions)
           + 'of them need to be fulfilled):')
-    for res, atoms in golden_hbonds_2.items():
-        print('   - {}:{}:'.format(*res), end='')
-        for at in atoms[:-1]:
-            print(at, end=',')
-        print(atoms[-1])
+    print_hbonds(golden_hbonds_2)
 
     all_sim_it = SimIt(PELE_sim_paths)
 
@@ -206,17 +125,17 @@ def main():
                   + ' missing')
             continue
 
-        hbonds, n_donors, n_acceptors = extract_hbonds(hbonds_path)
+        data, n_donors, n_acceptors = extract_hbond_linkers(hbonds_path)
 
-        print(' - Detected {} sets of H bonds'.format(len(hbonds)))
+        print(' - Detected {} sets of H bonds'.format(len(data)))
 
-        if (len(hbonds) == 0):
+        if (len(data) == 0):
             print(' - Skipping simulation because no H bonds were found')
             continue
 
         total_fulfillments, total_models, fulfillments_by_g1_hbond, \
-            fulfillments_by_g2_hbond, f_hbonds = \
-            hbond_fulfillment(hbonds, golden_hbonds_1, golden_hbonds_2,
+            fulfillments_by_g2_hbond, f_data = \
+            hbond_fulfillment(data, golden_hbonds_1, golden_hbonds_2,
                               minimum_g2_conditions)
 
         if (total_models == 0):
@@ -236,36 +155,40 @@ def main():
         print('   - Fulfillment ratio:         {:10.4f}'.format(ratio))
         if (len(golden_hbonds_1) > 0):
             print('   - Fulfillments ratio by g1 hbond:')
-        for (chain, residue), atoms in golden_hbonds_1.items():
+        for hbond_linker in golden_hbonds_1:
             print('     - {}:{}:{}: {:.4f}'.format(
-                chain, residue, atoms,
-                fulfillments_by_g1_hbond.get(
-                    (chain, residue, tuple(atoms)), 0) / total_models))
+                hbond_linker.chain, hbond_linker.residue,
+                ','.join(hbond_linker.atoms),
+                fulfillments_by_g1_hbond.get(hbond_linker, 0) / total_models))
         if (len(golden_hbonds_2) > 0):
             print('   - Fulfillments ratio by g2 hbond:')
-        for (chain, residue), atoms in golden_hbonds_2.items():
+        for hbond_linker in golden_hbonds_2:
             print('     - {}:{}:{}: {:.4f}'.format(
-                chain, residue, ','.join(atoms),
-                fulfillments_by_g2_hbond.get(
-                    (chain, residue, tuple(atoms)), 0) / total_models))
+                hbond_linker.chain, hbond_linker.residue,
+                ','.join(hbond_linker.atoms),
+                fulfillments_by_g2_hbond.get(hbond_linker, 0) / total_models))
 
         with open(str(PELE_sim_path.joinpath(output_path)), 'w') as f:
             f.write('rotamers;donors;acceptors;models;fulfillments;ratio')
-            for (chain, residue), atoms in golden_hbonds_1.items():
-                f.write(';{}:{}:{}'.format(chain, residue, ','.join(atoms)))
-            for (chain, residue), atoms in golden_hbonds_2.items():
-                f.write(';{}:{}:{}'.format(chain, residue, ','.join(atoms)))
+            for hbond_linker in golden_hbonds_1:
+                f.write(';{}:{}:{}'.format(
+                    hbond_linker.chain, hbond_linker.residue,
+                    ','.join(hbond_linker.atoms)))
+            for hbond_linker in golden_hbonds_2:
+                f.write(';{}:{}:{}'.format(
+                    hbond_linker.chain, hbond_linker.residue,
+                    ','.join(hbond_linker.atoms)))
             f.write('\n')
 
             f.write('{};{};{};'.format(n_rotamers, n_donors, n_acceptors))
             f.write('{};{};{:.4f}'.format(total_models, total_fulfillments,
                                           ratio))
-            for (chain, residue), atoms in golden_hbonds_1.items():
+            for hbond_linker in golden_hbonds_1:
                 f.write(';{:.4f}'.format(fulfillments_by_g1_hbond.get(
-                    (chain, residue, tuple(atoms)), 0) / total_models))
-            for (chain, residue), atoms in golden_hbonds_2.items():
+                    hbond_linker, 0) / total_models))
+            for hbond_linker in golden_hbonds_2:
                 f.write(';{:.4f}'.format(fulfillments_by_g2_hbond.get(
-                    (chain, residue, tuple(atoms)), 0) / total_models))
+                    hbond_linker, 0) / total_models))
 
         if subpockets_relative_filtering is not None:
             subpockets_filtering = Path(subpockets_relative_filtering)
@@ -279,10 +202,10 @@ def main():
             subpockets_data = pd.read_csv(str(subpockets_path))
 
             f_subpockets = subpockets_data.merge(
-                f_hbonds, on=['epoch', 'trajectory', 'model'])
+                f_data, on=['epoch', 'trajectory', 'step'])
 
-            f_subpockets = pd.merge(f_hbonds, subpockets_data.drop_duplicates(
-                subset=['epoch', 'trajectory', 'model']))
+            f_subpockets = pd.merge(f_data, subpockets_data.drop_duplicates(
+                subset=['epoch', 'trajectory', 'step']))
 
             f_subpockets_path = subpockets_path.parent.joinpath(
                 '{}_hbonds_filter.csv'.format(
