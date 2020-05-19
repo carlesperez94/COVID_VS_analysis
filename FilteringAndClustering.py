@@ -710,6 +710,10 @@ def main():
             f.write('{:12s}: {: 10.1f}\n'.format('Max Tot. E.', np.max(tes)))
             f.write('{:12s}: {: 10.1f}\n'.format('Max Int. E.', np.max(ies)))
             f.write('{:12s}: {: 10.1f}\n'.format('Max RMSD', np.max(rmsds)))
+            f.write('{:12s}: {: 10d}\n'.format('Sampling', len(PELE_ids[0])))
+            f.write('{:12s}: {: 10d}\n'.format('Hb sel', len(filtered_PELE_ids_1)))
+            f.write('{:12s}: {: 10d}\n'.format('E sel', len(filtered_PELE_ids_2)))
+
 
         rep_traj = md.load(str(PELE_sim_path.joinpath(
             'output/{}/trajectory_{}.xtc'.format(
